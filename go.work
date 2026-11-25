@@ -1,0 +1,12 @@
+go 1.27.3
+
+use (
+	./conformance
+	./core
+	./version
+	../krewire/auth
+	../krewire/errs
+	../krewire/model
+	../krewire/sec
+	../krewire/version
+)
