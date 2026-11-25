@@ -1,0 +1,107 @@
+name: CI Pipeline
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Krewire Agent Continuous Integration Pipeline
+# Validates all Agent modules (core, conformance, version)
+# Triggered on pull requests and pushes to main
+# ─────────────────────────────────────────────────────────────────────────────
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-agent-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  GOTOOLCHAIN: local
+  GO_VERSION: "1.27.3"
+
+jobs:
+  gofmt:
+    name: Code Formatting (gofmt)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Verify Formatting
+        run: |
+          DIFF=$(gofmt -l .)
+          if [ -n "$DIFF" ]; then
+            echo "::error::Files not formatted with gofmt:"
+            echo "$DIFF"
+            exit 1
+          fi
+
+  module-quality:
+    name: Module Quality (${{ matrix.module }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        module:
+          - core
+          - conformance
+          - version
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: false
+
+      - name: Provision Core Dependencies
+        run: |
+          mkdir -p ..
+          if [ ! -d "../krewire" ]; then
+            git clone --depth 1 https://github.com/krewire/krewire.git ../krewire
+          fi
+
+      - name: Static Analysis (go vet)
+        run: |
+          go vet ./${{ matrix.module }}/...
+
+      - name: Unit & Race Tests (go test)
+        run: |
+          go test -v -race ./${{ matrix.module }}/...
+
+      - name: Pure-Go Compilation (CGO_ENABLED=0)
+        run: |
+          CGO_ENABLED=0 go build ./${{ matrix.module }}/...
+
+  ci-ok:
+    name: All CI Gates Passed (ci-ok)
+    needs: [gofmt, module-quality]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Evaluate Aggregate CI Result
+        run: |
+          if [ "${{ needs.gofmt.result }}" != "success" ] || \
+             [ "${{ needs.module-quality.result }}" != "success" ]; then
+            echo "::error::One or more required CI gates failed or were cancelled."
+            echo "gofmt: ${{ needs.gofmt.result }}"
+            echo "module-quality: ${{ needs.module-quality.result }}"
+            exit 1
+          fi
+          echo "All Agent modules, formatting checks, and tests passed successfully."
